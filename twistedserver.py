@@ -6,9 +6,11 @@ import DataHandler
 import Client
 import traceback
 import logging
-import resource
-
-maxhandles, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+try:
+	import resource
+	maxhandles, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+except:
+	maxhandles = 1023
 maxclients = int(maxhandles / 2)
 
 class Chat(protocol.Protocol, Client.Client, TimeoutMixin):

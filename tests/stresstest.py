@@ -15,7 +15,7 @@ from base64 import b64decode as SAFE_DECODE_FUNC
 
 import base64
 
-NUM_CLIENTS = 1
+NUM_CLIENTS = 10
 NUM_UPDATES = 10000000
 USE_THREADS = False
 CLIENT_NAME = "ubertest%02d"
@@ -29,6 +29,70 @@ BACKUP_SERVERS = [
 	("lobby1.springlobby.info", 8200),
 	("lobby2.springlobby.info", 8200),
 ]
+
+class User:
+	def __init__(self, userName, country, cpu ,userID, lobbyID = "*"):
+		self.userName = userName
+		self.country = country
+		self.cpu = cpu
+		self.userID = userID
+		self.lobbyID = lobbyID
+		self.battleID = None
+		self.channels = {}
+
+class Battle:
+	def __init__(self, battleID, type, natType, founder, ip, port, maxPlayers, passworded, rank, mapHash, engineName="engineName",  engineVersion= 'engineVersion',map = "map", title='title', gameName = 'gameName',  channel = 'channel'):
+		self.users = {}
+		self.battleID = battleID
+		self.type = type
+		self.natType = natType
+		self.founder = founder
+		self.ip = ip
+		self.port = port
+		self.maxPlayers = maxPlayers
+		self.passworded = passworded
+		self.rank = rank
+		self.mapHash = mapHash
+		self.engineName = engineName
+		self.engineVersion = engineVersion
+		self.map = map
+		self.title = title
+		self.gameName = gameName
+		self.channel = channel
+	def join(self, user):
+		if user.userName in self.users:
+			print(f"Battle:Join: User {user.userName} already in battle {self.battleID}")
+		else:
+			if user.battleID is None:
+				self.users[user.userName] = user
+				user.battleID = self.battleID
+			else:
+				print(f"Battle:Join: User {user.userName} was already in a different battle {user.battleID} when trying to join {self.battleID}")
+	def leave(self, user):
+		if user.userName not in self.users:
+			print(f"Battle:Leave: User {user.userName} wasnt even in battle {self.battleID}")
+		else:
+			if user.battleID is None:
+				print(f"Battle:Leave: User {user.userName} already had None battleid while leaveing {self.battleID}")
+			elif user.battleID != self.battleID:
+				print(f"Battle:Leave: User {user.userName} leaveing {self.battleID} had a different battleID {user.battleID}")
+			user.battleID = None
+			del self.users[user.userName]
+
+class Channel:
+	def __init__(self, name):
+		self.name = name
+		self.users = {}
+	def join(self,user):
+		if user.userName in self.users:			
+			print(f"Channel:Join: User {user.userName} already in channel {self.name}")
+		else:
+			self.users[user.userName] = user
+	def leave(self, user):
+		if user.userName not in self.users:
+			print(f"Channel:Leave: User {user.userName} wasnt even in channel {self.name}")
+		else:
+			del self.users[user.userName]
 
 class LobbyClient:
 
@@ -48,6 +112,7 @@ class LobbyClient:
 		self.users = {}
 		self.battles = {}
 		self.channels = {}
+		self.usertobattle = {}
 		self.battleid = 0
 		self.running = True
 
@@ -82,6 +147,54 @@ class LobbyClient:
 
 		self.out_LOGIN()
 
+	def AssertUserNameExists(self, userName, verbose = True):
+		if userName not in self.users:
+			if verbose:
+				curframe = inspect.currentframe()
+				calframe = inspect.getouterframes(curframe, 2)
+				print(f'AssertUserNameExists: {userName} does not exist, called from {calframe[1][3]}')
+			return False
+		else:
+			return True
+		
+	def AssertBattleIDExists(self, battleID, verbose = True):
+		if battleID not in self.battles:
+			if verbose:
+				curframe = inspect.currentframe()
+				calframe = inspect.getouterframes(curframe, 2)
+				print(f'AssertBattleIDNameExists: {battleID} does not exist, called from {calframe[1][3]}')
+			return False
+		else:
+			return True
+		
+	def AssertChanNameExists(self, chanName, verbose = True):
+		if chanName not in self.channels:
+			if verbose:
+				curframe = inspect.currentframe()
+				calframe = inspect.getouterframes(curframe, 2)
+				print(f'AssertChanNameExists: {chanName} does not exist, called from {calframe[1][3]}')
+			return False
+		else:
+			return True
+		
+	def AssertUserIsInBattle(self, userName, battleID, verbose = True):
+		# by this point assume that user and battle both exist
+		user = self.users[userName]
+		battle = self.battles[battleID]
+		if userName not in battle.users:
+			if verbose: 
+				curframe = inspect.currentframe()
+				calframe = inspect.getouterframes(curframe, 2)
+				print(f'AssertUserIsInBattle: {userName} is not in {battleID}, called from {calframe[1][3]}')
+			return False
+		if user.battleID != battleID:
+			if verbose: 
+				curframe = inspect.currentframe()
+				calframe = inspect.getouterframes(curframe, 2)
+				print(f'AssertUserIsInBattle: {userName} appears to be in a different battle {user.battleID}, and not in {battleID}, called from {calframe[1][3]}')
+			return False
+		return True
+
 
 	def Send(self, data, batch = True):
 		## test-client never tries to send unicode strings, so
@@ -92,8 +205,11 @@ class LobbyClient:
 
 		if (len(data) == 0):
 			return
+		try:
+			self.host_socket.send(data.encode("utf-8") + b"\n")
+		except ConnectionResetError:
+			print (f"Connection reset for user {self.username}") 
 
-		self.host_socket.send(data.encode("utf-8") + b"\n")
 
 	def Recv(self):
 		num_received_bytes = len(self.socket_data)
@@ -103,7 +219,8 @@ class LobbyClient:
 		except BlockingIOError as e:
 			if e.errno == 11: # Resource temporarily unavailable
 				return
-			raise(e)
+			return
+			#raise(e)
 
 		if (len(self.socket_data) == num_received_bytes):
 			return
@@ -169,7 +286,8 @@ class LobbyClient:
 
 
 	def out_LOGIN(self):
-		self.Send("LOGIN %s %s 0 *\tstresstester client\t0\tsp cl p" % (self.username, self.password))
+		#self.Send("LOGIN %s %s 0 *\tstresstester client\t0\tsp cl p" % (self.username, self.password))
+		self.Send("LOGIN %s %s 0 *\tstresstester client\t0\tu p" % (self.username, self.password))
 
 		self.requested_authentication = True
 
@@ -220,13 +338,14 @@ class LobbyClient:
 
 
 	def in_AGREEMENT(self, msg):
+		time.sleep(5)
 		pass
 
 	def in_AGREEMENTEND(self):
-		print("[AGREEMENDEND][time=%d::iter=%d]" % (time.time(), self.iters))
+		print("[AGREEMENTEND][time=%d::iter=%d]" % (time.time(), self.iters))
 		#assert(self.accepted_registration)
 		assert(not self.accepted_authentication)
-
+		time.sleep(5)
 		self.out_CONFIRMAGREEMENT()
 		self.out_LOGIN()
 
@@ -262,29 +381,33 @@ class LobbyClient:
 
 	def in_MOTD(self, msg):
 		pass
-	def in_ADDUSER(self, msg):
-		user = msg.split(" ")
-		self.users[user[0]] = user[1:]
-	def in_BATTLEOPENED(self, msg):
-		battle = msg.split(" ")
-		battleid = int(battle[0])
+
+	def in_ADDUSER(self, userName, country, cpu, userID, lobbyID = "*"):
+		user = User(userName, country, cpu, userID, lobbyID)
+		self.users[userName] = user
+
+	def in_BATTLEOPENED(self, battleID, type, natType, founder, ip, port, maxPlayers, passworded, rank, mapHash, engineName="engineName",  engineVersion= 'engineVersion',map = "map", title='title', gameName = 'gameName',  channel = 'channel'):
 		#print("BATTLEOPENED received %d %s" %(battleid, self.username))
-		if battleid in self.battles:
-			print("Inconsistence detected: BATTLEOPENED %d" %(battleid))
-			print("Battles: " + str(self.battles))
-			print(msg)
-			print(self.username)
-			sys.exit(1)
-		self.battles[battleid] = battle[1:]
+		if self.AssertUserNameExists(founder):
+			if battleID in self.battles:
+				print(f"in_BATTLEOPENED: {battleID} already exists in battles: {self.battles}")
+			else:
+				battle = Battle(battleID, type, natType, founder, ip, port, maxPlayers, passworded, rank, mapHash, engineName,  engineVersion, map , title, gameName ,  channel)		
+			
+				self.battles[battleID] = battle
+
 	def in_UPDATEBATTLEINFO(self, msg):
 		#print(msg)
 		pass
-	def in_JOINBATTLE(self, msg):
-		#print(msg)
-		pass
-	def in_JOINEDBATTLE(self, msg):
-		#print(msg)
-		pass
+
+	def in_JOINBATTLE(self, battleID, hashCode, chanName): 
+		if self.AssertBattleIDExists(battleID):
+			self.battles[battleID].join(self.users[self.username])
+		
+	def in_JOINEDBATTLE(self, battleID, userName, scriptPassword = "*"):
+		if self.AssertBattleIDExists(battleID) and self.AssertUserNameExists(userName):
+			self.battles[battleID].join(self.users[userName])
+
 	def in_CLIENTSTATUS(self, msg):
 		pass
 	def in_LOGININFOEND(self):
@@ -292,20 +415,21 @@ class LobbyClient:
 		pass
 	def in_CHANNELTOPIC(self, msg):
 		print("CHANNELTOPIC %s"%msg)
-	def in_BATTLECLOSED(self, msg):
-		battleid = int(msg)
-		#print("BATTLECLOSED received %d %s" %(battleid, self.username))
-		try:
-			del self.battles[battleid]
-		except:
-			print("Inconsistence detected: BATTLECLOSED " + str(battleid))
-			print("Battles: " + str(self.battles))
-			print(self.username)
-			sys.exit(1)
-	def in_REMOVEUSER(self, msg):
-		print("REMOVEUSER %s" % msg)
-	def in_LEFTBATTLE(self, msg):
-		print("LEFTBATTLE %s" % msg)
+
+	def in_BATTLECLOSED(self, battleID):
+		if self.AssertBattleIDExists(battleID):
+			for user in self.battles[battleid].users:
+				if self.AssertUserNameExists(user.userName):
+					self.battles[battleid].leave(user)
+	
+	def in_REMOVEUSER(self, userName):
+		if self.AssertUserNameExists(userName):
+			del self.users[userName]
+		#print("REMOVEUSER %s" % msg)
+	def in_LEFTBATTLE(self, battleID, userName):
+		if self.AssertUserNameExists(userName) and self.AssertBattleIDExists(battleID) and self.AssertUserIsInBattle(userName, battleID):
+			self.battles[battleID].leave(userName)
+		#print("LEFTBATTLE %s" % msg)
 
 	def in_PONG(self):
 		diff = time.time() - self.prv_ping_time
@@ -320,14 +444,28 @@ class LobbyClient:
 
 		self.prv_ping_time = time.time()
 
-	def in_JOIN(self, msg):
-		print("JOIN %s" % msg)
+	def in_JOIN(self, chanName):
+		if chanName in self.channels:
+			print(f'in_JOIN: Channame {chanName} already exists')
+		else:
+			self.channels[chanName] = Channel(chanName)
+		self.channels[chanName].join(self.users[self.username])
+		#print("JOIN %s" % msg)
+
 	def in_CLIENTS(self, msg):
 		print("CLIENTS %s"% msg)
-	def in_JOINED(self, msg):
-		print("JOINED %s"% msg)
-	def in_LEFT(self, msg):
-		print("LEFT %s" % msg)
+
+	def in_JOINED(self, chanName, userName): 
+		# Sent to all clients in a channel (except the new client) when a new user joins the channel. 
+		if self.AssertUserNameExists(userName) and self.AssertChanNameExists(chanName):
+			self.channels[chanName].join(self.users[userName])
+		print(f"JOINED {chanName} {userName}")
+
+	def in_LEFT(self, chanName, userName, reason = ""):
+		if self.AssertUserNameExists(userName) and self.AssertChanNameExists(chanName):
+			self.channels[chanName].leave(self.users[userName])	
+		#print("LEFT %s" % msg)
+			
 	def in_SAID(self, msg):
 		print("SAID %s" %msg)
 	def in_SAIDPRIVATE(self, msg):
