@@ -7,7 +7,10 @@ import time
 import threading
 import traceback
 import random
+#import ssl
 import sys
+import argparse
+#import tlsclient
 
 from hashlib import md5
 
@@ -15,11 +18,30 @@ from base64 import b64decode as SAFE_DECODE_FUNC
 
 import base64
 
-NUM_CLIENTS = 10
+#TODO:
+# tls for hosting battles
+# argparse stuff
+# multiproc
+# handle disconnect
+
+# States:
+# INIT <-> LOGGEDIN <-> JOININGBATTLE -> JOINEDBATTLE
+
+import enum
+
+class State(enum.Enum):
+	INIT = 0
+	LOGGEDIN = 1
+	JOININGBATTLE = 2
+	INBATTLE = 3
+	HOSTING = 4
+
+USE_THREADS = True
+
+NUM_CLIENTS = 100 if USE_THREADS == True else 10
 NUM_UPDATES = 10000000
-USE_THREADS = False
-CLIENT_NAME = "ubertest%02d"
-CLIENT_PWRD = "KeepItSecretKeepItSafe%02d"
+CLIENT_NAME = "ubertest%04d"
+CLIENT_PWRD = "KeepItSecretKeepItSafe%04d"
 MAGIC_WORDS = "SqueamishOssifrage"
 
 HOST_SERVER = ("localhost", 8200)
@@ -39,6 +61,9 @@ class User:
 		self.lobbyID = lobbyID
 		self.battleID = None
 		self.channels = {}
+		self.state = State.LOGGEDIN # we need to be able to track other user's states too
+		self.status = 0
+		self.battlestatus = 0
 
 class Battle:
 	def __init__(self, battleID, type, natType, founder, ip, port, maxPlayers, passworded, rank, mapHash, engineName="engineName",  engineVersion= 'engineVersion',map = "map", title='title', gameName = 'gameName',  channel = 'channel'):
@@ -62,22 +87,30 @@ class Battle:
 	def join(self, user):
 		if user.userName in self.users:
 			print(f"Battle:Join: User {user.userName} already in battle {self.battleID}")
+			return False
 		else:
 			if user.battleID is None:
 				self.users[user.userName] = user
 				user.battleID = self.battleID
+				return True
 			else:
 				print(f"Battle:Join: User {user.userName} was already in a different battle {user.battleID} when trying to join {self.battleID}")
+				return False
 	def leave(self, user):
 		if user.userName not in self.users:
 			print(f"Battle:Leave: User {user.userName} wasnt even in battle {self.battleID}")
+			return False
 		else:
+			ok = True
 			if user.battleID is None:
 				print(f"Battle:Leave: User {user.userName} already had None battleid while leaveing {self.battleID}")
+				ok = False
 			elif user.battleID != self.battleID:
 				print(f"Battle:Leave: User {user.userName} leaveing {self.battleID} had a different battleID {user.battleID}")
+				ok = False
 			user.battleID = None
 			del self.users[user.userName]
+			return ok
 
 class Channel:
 	def __init__(self, name):
@@ -85,7 +118,7 @@ class Channel:
 		self.users = {}
 	def join(self,user):
 		if user.userName in self.users:			
-			print(f"Channel:Join: User {user.userName} already in channel {self.name}")
+			print(f"Channel:Join: User {user.userName} already in channel {self.name}, members: {self.users.keys()}")
 		else:
 			self.users[user.userName] = user
 	def leave(self, user):
@@ -105,9 +138,7 @@ class LobbyClient:
 		self.password = base64.b64encode(md5(password.encode("utf-8")).digest()).decode("utf-8")
 		assert(type(self.password) == str)
 
-		self.OpenSocket(server_addr)
-		self.Init()
-		self.state = 0
+		self.state = State.INIT
 		self.nextstep = random.randint(0, 200)
 		self.users = {}
 		self.battles = {}
@@ -115,17 +146,31 @@ class LobbyClient:
 		self.usertobattle = {}
 		self.battleid = 0
 		self.running = True
+		self.handlers = {} #key name, value tuple of(function, argcount, varargcount)
+		self.cmdlog = [] # push all server and client messages here 
+		self.joinBattleTarget = None
+		self.OpenSocket(server_addr)
+		self.Init()
 
 	def OpenSocket(self, server_addr):
+		#ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+		#ssl_context.load_verify_locations("server.pem")
+
 		while (self.host_socket == None):
 			try:
+				sock = socket.create_connection(server_addr,5)
+				#ssl_context = ssl.create_default_context()
+				#secure_sock = ssl_context.wrap_socket(sock, server_hostname=server_addr[0])
 				## non-blocking so we do not have to wait on server
-				self.host_socket = socket.create_connection(server_addr, 5)
+				#self.host_socket = secure_sock
+				self.host_socket = sock
 				self.host_socket.setblocking(0)
+				print (f"{self.username} Connected")
 			except socket.error as msg:
 				print("[OpenSocket] %s" % msg)
 				## print(traceback.format_exc())
 				time.sleep(0.5)
+			#print (f"Trying to connect as {self.username}")
 
 	def Init(self):
 		self.prv_ping_time = time.time()
@@ -134,6 +179,7 @@ class LobbyClient:
 		self.min_ping_time = 100.0
 		self.sum_ping_time =   0.0
 		self.iters = 0
+		self.state = State.INIT
 
 		self.data_send_queue = []
 
@@ -146,6 +192,14 @@ class LobbyClient:
 		self.accepted_authentication  = False ## set on in_ACCEPTED
 
 		self.out_LOGIN()
+
+	def Cleanup(self):			
+		self.host_socket = None
+		self.socket_data = ""	
+		self.users = {}
+		self.battles = {}
+		self.channels = {}
+		self.usertobattle = {}
 
 	def AssertUserNameExists(self, userName, verbose = True):
 		if userName not in self.users:
@@ -206,6 +260,8 @@ class LobbyClient:
 		if (len(data) == 0):
 			return
 		try:
+			if data[0:4] != "PING":
+				self.cmdlog.append(f"[{time.time():.2f}] OUT: {data} S:{self.state}")
 			self.host_socket.send(data.encode("utf-8") + b"\n")
 		except ConnectionResetError:
 			print (f"Connection reset for user {self.username}") 
@@ -217,10 +273,22 @@ class LobbyClient:
 		try:
 			self.socket_data += self.host_socket.recv(4096).decode("utf-8")
 		except BlockingIOError as e:
+			#print (f"BlockingIOError")
 			if e.errno == 11: # Resource temporarily unavailable
 				return
 			return
 			#raise(e)
+		except ConnectionResetError as e:
+			self.Cleanup()
+			print(f"ConnectionResetError {self.username}")
+			time.sleep(10)
+			#self.Init()
+		except ConnectionAbortedError as e:
+			self.Cleanup()
+			print(f"ConnectionResetError {self.username}")
+			time.sleep(10)
+			#self.Init()
+
 
 		if (len(self.socket_data) == num_received_bytes):
 			return
@@ -232,7 +300,7 @@ class LobbyClient:
 		for raw_data_blob in data_blobs:
 			if (len(raw_data_blob) == 0):
 				continue
-
+			
 			## strips leading spaces and trailing carriage return
 			self.Handle((raw_data_blob.rstrip('\r')).lstrip(' '))
 
@@ -242,6 +310,10 @@ class LobbyClient:
 		## probably caused by trailing newline ("abc\n".split("\n") == ["abc", ""])
 		if (len(msg) <= 1):
 			return True
+		
+		if msg[0:4] != "PONG":
+			self.cmdlog.append(f"[{time.time():.2f}] IN:  {msg} S:{self.state}")
+
 
 		assert(type(msg) == str)
 
@@ -255,16 +327,26 @@ class LobbyClient:
 
 		command = command.upper()
 
-		funcname = 'in_%s' % command
-		function = getattr(self, funcname)
-		function_info = inspect.getargspec(function)
-		total_args = len(function_info[0]) - 1
-		optional_args = 0
+		if command not in self.handlers:
+			funcname = 'in_%s' % command
+			function = getattr(self, funcname)
+			function_info = inspect.getfullargspec(function) # FullArgSpec(args, varargs, varkw, defaults, kwonlyargs, kwonlydefaults, annotations)
+			#print(f"Function {funcname} has {function_info.args} args and {function_info.defaults} defaults")
+			required_args = 0
+			if function_info.args:
+				required_args = len(function_info.args) -1
+			total_args = required_args
+			if function_info.defaults:
+				total_args += len(function_info.defaults)
 
-		if (function_info[3]):
-			optional_args = len(function_info[3])
+			self.handlers[command] = (function, required_args, total_args) # -1 for self
+		
+		function, required_args, total_args = self.handlers[command]
 
-		required_args = total_args - optional_args
+		#if (function_info[3]):
+		#	optional_args = len(function_info[3])
+
+		#required_args = total_args - optional_args
 
 		if (required_args == 0 and numspaces == 0):
 			function()
@@ -284,12 +366,16 @@ class LobbyClient:
 			print(traceback.format_exc())
 			return False
 
+	def dumpLog(self,reason = ""):
+		logstr = '\n'.join(self.cmdlog)
+		print(f'{logstr} \n {self.username} dumped log for {reason}')
+		pass
 
 	def out_LOGIN(self):
 		#self.Send("LOGIN %s %s 0 *\tstresstester client\t0\tsp cl p" % (self.username, self.password))
-		self.Send("LOGIN %s %s 0 *\tstresstester client\t0\tu p" % (self.username, self.password))
-
+		self.Send("LOGIN %s %s 0 *\tstresstester client\t0\tsp b" % (self.username, self.password))
 		self.requested_authentication = True
+		print (f"LOGIN {self.username}")
 
 	def out_REGISTER(self):
 		print("[REGISTER][time=%d::iter=%d]" % (time.time(), self.iters))
@@ -303,8 +389,8 @@ class LobbyClient:
 
 	def out_PING(self):
 		#print("[PING][time=%d::iters=%d]" % (time.time(), self.iters))
-
 		self.Send("PING")
+
 	def out_JOIN(self, chan):
 		self.Send("JOIN " + chan)
 	def out_LEAVE(self, chan):
@@ -319,26 +405,27 @@ class LobbyClient:
 		self.Send("SAYPRIVATE %s %s" % (user, msg))
 
 	def in_OPENBATTLE(self, msg):
-		print("%s Created battle %d" %(self.username, int(msg)))
+		#print("%s Created battle %d" %(self.username, int(msg)))
 		self.battleid = int(msg)
 
 	def in_REQUESTBATTLESTATUS(self, msg):
 		pass
 
 	def out_OPENBATTLE(self, type, natType, password, port, maxPlayers, gameHash, rank, mapHash, engineName, engineVersion, map, title, gameName):
+		self.state = State.JOININGBATTLE
 		self.Send("OPENBATTLE %d %d %s %d %d %d %d %d %s\t%s\t%s\t%s\t%s" %
 			(type, natType, password, port, maxPlayers, gameHash, rank, mapHash, engineName, engineVersion, map, title, gameName))
 
 	def in_TASSERVER(self, protocolVersion, springVersion, udpPort, serverMode):
-		#print("[TASSERVER][time=%d::iter=%d] proto=%s spring=%s udp=%s mode=%s" % (time.time(), self.iters, protocolVersion, springVersion, udpPort, serverMode))
+		print("[TASSERVER][time=%d::iter=%d] proto=%s spring=%s udp=%s mode=%s" % (time.time(), self.iters, protocolVersion, springVersion, udpPort, serverMode))
 		self.server_info = (protocolVersion, springVersion, udpPort, serverMode)
 
 	def in_SERVERMSG(self, msg):
-		print("[SERVERMSG][time=%d::iter=%d] %s" % (time.time(), self.iters, msg))
+		print("[SERVERMSG][time=%d::iter=%d][%s] %s" % (time.time(), self.iters,self.username, msg))
 
 
 	def in_AGREEMENT(self, msg):
-		time.sleep(5)
+		#time.sleep(5)
 		pass
 
 	def in_AGREEMENTEND(self):
@@ -393,34 +480,68 @@ class LobbyClient:
 				print(f"in_BATTLEOPENED: {battleID} already exists in battles: {self.battles}")
 			else:
 				battle = Battle(battleID, type, natType, founder, ip, port, maxPlayers, passworded, rank, mapHash, engineName,  engineVersion, map , title, gameName ,  channel)		
-			
 				self.battles[battleID] = battle
+				# Hosts automatically join their own battles
+				#self.in_JOINEDBATTLE(battleID, founder)
 
 	def in_UPDATEBATTLEINFO(self, msg):
 		#print(msg)
 		pass
 
-	def in_JOINBATTLE(self, battleID, hashCode, chanName): 
+	def in_JOINBATTLE(self, battleID, hashCode, chanName = ""): 
+		#notifies us only!
+		#but it seems like we are also sent a JOINEDBATTLE for our own battle too
 		if self.AssertBattleIDExists(battleID):
-			self.battles[battleID].join(self.users[self.username])
+			if not self.battles[battleID].join(self.users[self.username]):
+				self.dumpLog()
+			else:
+				self.state = State.INBATTLE
+		pass
 		
 	def in_JOINEDBATTLE(self, battleID, userName, scriptPassword = "*"):
 		if self.AssertBattleIDExists(battleID) and self.AssertUserNameExists(userName):
-			self.battles[battleID].join(self.users[userName])
-
+			if self.username == userName:
+				if userName not in self.battles[battleID].users:
+					self.battles[battleID].join(self.users[userName])
+				if self.username == self.battles[battleID].founder:
+					self.state = State.HOSTING
+				else:
+					self.state = State.INBATTLE
+			else:
+				if not self.battles[battleID].join(self.users[userName]):
+					self.dumpLog()
+			
 	def in_CLIENTSTATUS(self, msg):
 		pass
 	def in_LOGININFOEND(self):
 		## do stuff here (e.g. "JOIN channel")
+		self.state = State.LOGGEDIN
 		pass
+
 	def in_CHANNELTOPIC(self, msg):
 		print("CHANNELTOPIC %s"%msg)
 
+	def in_SETSCRIPTTAGS(self,msg):
+		pass
+
 	def in_BATTLECLOSED(self, battleID):
 		if self.AssertBattleIDExists(battleID):
-			for user in self.battles[battleid].users:
-				if self.AssertUserNameExists(user.userName):
-					self.battles[battleid].leave(user)
+
+			#amazing fun, we could have sent a JOINBATTLE, and if the battle gets closed meanwhile, then that will 
+			#never return a JOINBATTLEFAILED
+
+			if self.state == State.JOININGBATTLE and self.joinBattleTarget == battleID:
+				self.state = State.LOGGEDIN
+				self.joinBattleTarget = None
+
+
+			userNames = list(self.battles[battleID].users.items())
+			for userName, user in userNames:
+				if userName == self.username:
+					self.state = State.LOGGEDIN
+				if self.AssertUserNameExists(userName):
+					self.battles[battleID].leave(user)
+			del self.battles[battleID]
 	
 	def in_REMOVEUSER(self, userName):
 		if self.AssertUserNameExists(userName):
@@ -428,8 +549,33 @@ class LobbyClient:
 		#print("REMOVEUSER %s" % msg)
 	def in_LEFTBATTLE(self, battleID, userName):
 		if self.AssertUserNameExists(userName) and self.AssertBattleIDExists(battleID) and self.AssertUserIsInBattle(userName, battleID):
-			self.battles[battleID].leave(userName)
+			self.battles[battleID].leave(self.users[userName])
+			if userName == self.username:
+				self.state = State.LOGGEDIN
+				# if we are the dounders of our own battle, mark it as closed?
+				# now this is a very interesting one, 
+				# if we are the founders, and we leave the battle, then after we leave it, a few secs later it will get closed!
+
 		#print("LEFTBATTLE %s" % msg)
+
+	def in_JOINBATTLEREQUEST(self, userName, ip): #sent by server to battle host
+		#we should check if hes not already in some other battle, or my battle.
+		mybattleID = self.users[self.username].battleID
+		if self.AssertUserNameExists(userName) and self.AssertBattleIDExists(mybattleID):
+			if self.users[userName].battleID is not None:
+				print(f"JOINBATTLEREQUEST user {userName} asking to join my battle {mybattleID} is already in a battle at {self.users[userName].battleID}")
+				self.out_JOINBATTLEDENY(userName, f"is already in a battle at {self.users[userName].battleID}")
+			else:
+				self.out_JOINBATTLEACCEPT(userName)
+
+	def out_JOINBATTLEACCEPT(self, userName):
+		self.Send(f"JOINBATTLEACCEPT {userName}")
+
+	def out_JOINBATTLEDENY(self, userName, reason = ""):
+		self.Send(f"JOINBATTLEDENY {userName} {reason}")
+
+	def out_LEAVEBATTLE(self):
+		self.Send(f"LEAVEBATTLE")
 
 	def in_PONG(self):
 		diff = time.time() - self.prv_ping_time
@@ -459,7 +605,7 @@ class LobbyClient:
 		# Sent to all clients in a channel (except the new client) when a new user joins the channel. 
 		if self.AssertUserNameExists(userName) and self.AssertChanNameExists(chanName):
 			self.channels[chanName].join(self.users[userName])
-		print(f"JOINED {chanName} {userName}")
+		#print(f"JOINED {chanName} {userName}")
 
 	def in_LEFT(self, chanName, userName, reason = ""):
 		if self.AssertUserNameExists(userName) and self.AssertChanNameExists(chanName):
@@ -467,31 +613,60 @@ class LobbyClient:
 		#print("LEFT %s" % msg)
 			
 	def in_SAID(self, msg):
-		print("SAID %s" %msg)
-	def in_SAIDPRIVATE(self, msg):
-		user, msg = msg.split(" ")
-		self.out_SAYPRIVATE(user,"You said: " + msg)
+		#print("SAID %s" %msg)
+		pass
+
+	def in_JOINBATTLEFAILED(self, reason):
+		print(f"JOINBATTLEFAILED {self.username} {reason}")
+		#self.dumpLog(reason)
+		if self.state == State.JOININGBATTLE:
+			self.state = State.LOGGEDIN
+			self.joinBattleTarget = None
+
+	def in_SAIDPRIVATE(self, userName, message):
+		if self.AssertUserNameExists(userName):
+			self.out_SAYPRIVATE(userName,"You said: " + message)
 
 	def in_SAYPRIVATE(self, msg):
 		print("SAYPRIVATE " +  msg)
 	def in_OPENBATTLEFAILED(self, msg):
 		pass
 	def in_CLIENTBATTLESTATUS(self, msg):
-		print("CLIENTBATTLESTATUS " +msg)
+		#print("CLIENTBATTLESTATUS " +msg)
+		pass
 	def in_FAILED(self, msg):
+		#self.dumpLog(msg)
 		print("FAILED " + msg)
+
+	def HostBattle(self): # open or join a battle
+		#print(self.username + " is trying to create a battle...")
+		self.out_OPENBATTLE(0, 0, '*', 1234, 10, 0x1234, 0, 0x1234, "spring", "103.0", "DeltaSiegeDry", f"Game {self.username}:{self.iters}", "Balanced Annihilation V9.54")
 
 	def JoinBattle(self): # open or join a battle
 		#print(self.username + " is trying to create a battle...")
-		self.out_OPENBATTLE(0, 0, '*', 1234, 10, 0x1234, 0, 0x1234, "spring", "103.0", "DeltaSiegeDry", "Game %d" %(self.iters), "Balanced Annihilation V9.54")
+		if len(self.battles) > 0:
+			battleID = random.choice(list(self.battles.keys()))
+			self.out_JOINBATTLE(battleID)
+			self.state = State.JOININGBATTLE
+			self.joinBattleTarget = battleID
+
+	def out_JOINBATTLE(self, battleID, password = '*', scriptPassword = None):
+		if scriptPassword is None:
+			self.Send(f"JOINBATTLE {battleID}")
+		else:
+			self.Send(f"JOINBATTLE {battleID} {password} {scriptPassword}")
+
+
 	def PlayInBattle(self): # start game or wait till game start
 		pass
 	def LeaveBattle(self): # leave battle
-		pass
+		self.out_LEAVEBATTLE()
+
 	def JoinChannel(self): # join channel
 		self.out_JOIN("sy")
 	def LeaveChannel(self): # leave channel
 		self.out_LEAVE("sy")
+
 
 	def Say(self):
 		self.out_SAY("sy", "Hello World no. %d" %(self.iters))
@@ -505,26 +680,24 @@ class LobbyClient:
 
 
 		if (self.iters > self.nextstep):
-			self.nextstep = self.iters + random.randint(0, 800)
-			self.state += 1
-			
-			if self.state == 1:
-				self.JoinBattle()
-			elif self.state == 2:
-				self.PlayInBattle()
-			elif self.state == 3:
-				self.LeaveBattle()
-			elif self.state == 4:
-				self.JoinChannel()
-			elif self.state == 5:
-				self.Say()
-			elif self.state == 6:
-				self.LeaveChannel()
-			else:
-				self.state = 0
-			#elif self.state == 5: # exit
-			#	self.running = False
+			self.nextstep = self.iters + random.randint(1, 2)
 
+			if self.state == State.LOGGEDIN:
+				if random.random() < 0.1:
+					self.HostBattle()
+				else:
+					self.JoinBattle()
+			elif self.state == State.HOSTING:
+				#dunno, kick people randomly?
+				if random.random() < 0.01:
+					self.LeaveBattle()
+				else:
+					pass
+			elif self.state == State.INBATTLE:
+				if random.random() < 0.2:
+					self.LeaveBattle()
+				else:
+					pass
 
 		## eat through received data
 		self.Recv()
@@ -532,6 +705,7 @@ class LobbyClient:
 	def Run(self, iters):
 		while (self.running):
 			self.Update()
+			time.sleep(0.02)
 
 		## say goodbye and close our socket
 		self.out_EXIT()
@@ -546,7 +720,7 @@ def RunClients(num_clients, num_updates):
 	for j in range(num_updates):
 		for i in range(num_clients):
 			clients[i].Update()
-		time.sleep(0.05)
+		time.sleep(0.1)
 
 	for i in range(num_clients):
 		clients[i].out_EXIT()
@@ -576,5 +750,6 @@ def main():
 	else:
 		RunClientThreads(NUM_CLIENTS, NUM_UPDATES)
 
-main()
+if __name__ == "__main__":
+	main()
 
