@@ -219,6 +219,8 @@ class Protocol:
 		self.contentdb = root.getContentDB()
 		self.SayHooks = root.SayHooks
 
+		self.handlers = {} # dict of {commandname = (function, args, kwonlyargs)}
+
 		self.restricted = restricted
 		self.restricted_list = restricted_list
 		
@@ -320,8 +322,8 @@ class Protocol:
 
 
 	def get_function_args(self, client, command, function, numspaces, args):
-		function_info = inspect.getargspec(function)
-		total_args = len(function_info[0]) - 2
+		function_info = inspect.getfullargspec(function)
+		total_args = len(function_info.args) - 2
 
 		# if there are no arguments, just call the function
 		# with client as its only arg: *([client]) = client
@@ -330,8 +332,8 @@ class Protocol:
 
 		# check for optional arguments
 		optional_args = 0
-		if function_info[3]:
-			optional_args = len(function_info[3])
+		if function_info.defaults:
+			optional_args = len(function_info.defaults)
 
 		# check if we've got enough words for filling the required args
 		required_args = total_args - optional_args
@@ -1781,14 +1783,14 @@ class Protocol:
 			self.out_OPENBATTLEFAILED(client, 'Invalid game hash 0')
 			return
 			
-		if not client.TLS:
-			self.out_SERVERMSG(client, "A TLS connection is required to host battles. Please upgrade your client.")
-			return
+		#if not client.TLS:
+		#	self.out_SERVERMSG(client, "A TLS connection is required to host battles. Please upgrade your client.")
+		#	return
 
 		noflag_limit = 8
 		if not client.bot and maxplayers > noflag_limit:
 			maxplayers = noflag_limit
-			self.out_SERVERMSG(client, "A botflag is required to host battles with > %i players. Your battle was restricted to %i players" % (noflag_limit, noflag_limit))
+			#self.out_SERVERMSG(client, "A botflag is required to host battles with > %i players. Your battle was restricted to %i players" % (noflag_limit, noflag_limit))
 
 		battle_name = '__battle__' + str(client.user_id)
 		if battle_name in self._root.channels:
