@@ -39,7 +39,7 @@ class State(enum.Enum):
 USE_THREADS = True
 
 NUM_CLIENTS = 100 if USE_THREADS == True else 10
-NUM_UPDATES = 10000000
+NUM_UPDATES = 1000
 CLIENT_NAME = "ubertest%04d"
 CLIENT_PWRD = "KeepItSecretKeepItSafe%04d"
 MAGIC_WORDS = "SqueamishOssifrage"
@@ -255,7 +255,7 @@ class LobbyClient:
 		self.handlers = {} #key name, value tuple of(function, argcount, varargcount)
 		self.cmdlog = [] # push all server and client messages here 
 		self.joinBattleTarget = None
-		self.myUser = User(self.userName,)
+		self.myUser = User(self.username)
 		self.OpenSocket(server_addr)
 		self.Init()
 
@@ -779,64 +779,95 @@ class LobbyClient:
 		self.out_SAY("sy", "Hello World no. %d" %(self.iters))
 
 	def CompareState(self, other):
-		matches = True
+		usersmatch = True
+		battlelistmatch = True
+		battleusersmatch = True
 		for userName in sorted(list(self.users.keys())):
 			if userName not in other.users:
 				print(f"Mismatch between userlist between {self.username} and {other.username}: {userName} does not exist in other")
-				matches = False
+				usersmatch = False
+		if not usersmatch:
+			print(f"{self.username} userlist: {sorted(list(self.users.keys()))}")
+			print(f"{other.username} userlist: {sorted(list(other.users.keys()))}")
 
 		for battleID in sorted(list(self.battles)):
 			if battleID not in other.battles:
 				print(f"Mismatch between battlelist between {self.username} and {other.username}: {battleID} does not exist in other")
-				matches = False
+				battlelistmatch = False
 			else:
-				for userName in self.battles[battleID].keys():
-					if userName not in other.battles[battleID]:
+				battleusersmatch = True
+				for userName in self.battles[battleID].users.keys():
+					if userName not in other.battles[battleID].users:
 						print(f"Mismatch between battlelist between {self.username} and {other.username}: {battleID} does not have user {userName}")
-						matches = False
-		return matches
+						battleusersmatch = False
+				if not battleusersmatch:
+					usersmatch = False
+					print(f"{self.username} battleID {battleID}: {sorted(list(self.battles[battleID].users.keys()))}")
+					print(f"{other.username} battleID {battleID}: {sorted(list(other.battles[battleID].users.keys()))}")
+		if not battlelistmatch:
+			print(f"{self.username} battlelist: {sorted(list(self.battles.keys()))}")
+			print(f"{other.username} battlelist: {sorted(list(other.battles.keys()))}")
+			
+
+		return battlelistmatch and usersmatch
 
 
 
-	def Update(self):
+	def Update(self, step = True):
 		assert(self.host_socket != None)
 
-		self.iters += 1
+		if step:
+			self.iters += 1
 
-		if ((self.iters % 10) == 0):
-			self.out_PING()
+			if ((self.iters % 10) == 0):
+				self.out_PING()
 
 
-		if (self.iters > self.nextstep):
-			self.nextstep = self.iters + random.randint(1, 2)
+			if (self.iters > self.nextstep):
+				self.nextstep = self.iters + random.randint(1, 2)
 
-			if self.state == State.LOGGEDIN:
-				if random.random() < 0.1:
-					self.HostBattle()
-				else:
-					self.JoinBattle()
-			elif self.state == State.HOSTING:
-				#dunno, kick people randomly?
-				if random.random() < 0.01:
-					self.LeaveBattle()
-				else:
-					pass
-			elif self.state == State.INBATTLE:
-				if random.random() < 0.2:
-					self.LeaveBattle()
-				else:
-					pass
+				if self.state == State.LOGGEDIN:
+					if random.random() < 0.1:
+						self.HostBattle()
+					else:
+						self.JoinBattle()
+				elif self.state == State.HOSTING:
+					#dunno, kick people randomly?
+					if random.random() < 0.01:
+						self.LeaveBattle()
+					else:
+						pass
+				elif self.state == State.INBATTLE:
+					if random.random() < 0.2:
+						self.LeaveBattle()
+					else:
+						pass
 
 		## eat through received data
 		self.Recv()
 
 	def Run(self, iters):
-		while (self.running):
+		for i in range(iters):
 			self.Update()
 			time.sleep(0.02)
+		time.sleep(1)
+		self.Update(step = False)
 
 		## say goodbye and close our socket
 		self.out_EXIT()
+
+def CompareClients(clients):
+	allmatch = True
+	for i, client in enumerate(clients):
+		for j, otherclient in enumerate(clients):
+			if i != j:
+				if not client.CompareState(otherclient):
+					allmatch = False
+	if not allmatch:
+		print(f"Clients dont match after {NUM_UPDATES} updates")
+	else:
+		print(f"Clients match after {num_updates} updates")
+	return allmatch
 
 
 def RunClients(num_clients, num_updates):
@@ -846,14 +877,38 @@ def RunClients(num_clients, num_updates):
 		clients[i] = LobbyClient(HOST_SERVER, (CLIENT_NAME % i), (CLIENT_PWRD % i))
 
 	for j in range(num_updates):
-		for i in range(num_clients):
-			clients[i].Update()
+		if j == num_updates -1 :
+			time.sleep(1)
+			for i in range(num_clients):
+				clients[i].Update(step = False)
+		else:
+
+			for i in range(num_clients):
+				clients[i].Update()
 		time.sleep(0.1)
+
+	CompareClients(clients)
 
 	for i in range(num_clients):
 		clients[i].out_EXIT()
 
+class ClientThread(threading.Thread):
+	def __init__(self, args):
+		threading.Thread.__init__(self)
+		self.client = None
+		self.client_num = args[0]
+		self.num_updates = args[1]
+	def run(self):
 
+		client = LobbyClient(HOST_SERVER, (CLIENT_NAME % self.client_num), (CLIENT_PWRD % self.client_num))
+
+		print("[RunClientThread] running client %s" % client.username)
+		client.Run(self.num_updates)
+		print("[RunClientThread] client %s finished" % client.username)
+		self.client = client
+		return client
+	
+	
 
 def RunClientThread(i, k):
 	client = LobbyClient(HOST_SERVER, (CLIENT_NAME % i), (CLIENT_PWRD % i))
@@ -861,22 +916,26 @@ def RunClientThread(i, k):
 	print("[RunClientThread] running client %s" % client.username)
 	client.Run(k)
 	print("[RunClientThread] client %s finished" % client.username)
+	return client
 
 def RunClientThreads(num_clients, num_updates):
 	threads = [None] * num_clients
-
+	clients = []
 	for i in range(num_clients):
-		threads[i] = threading.Thread(target = RunClientThread, args = (i, num_updates, ))
+		#threads[i] = threading.Thread(target = RunClientThread, args = (i, num_updates, ))
+		threads[i] = ClientThread( (i, num_updates ))
 		threads[i].start()
-	for t in threads:
+	for i,t in enumerate(threads):
 		t.join()
+		clients.append( t.client)
+	CompareClients(clients)
 
 
 def main():
-	if (not USE_THREADS):
-		RunClients(NUM_CLIENTS, NUM_UPDATES)
-	else:
+	if USE_THREADS:
 		RunClientThreads(NUM_CLIENTS, NUM_UPDATES)
+	else:
+		RunClients(NUM_CLIENTS, NUM_UPDATES)
 
 if __name__ == "__main__":
 	main()
