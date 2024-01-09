@@ -52,8 +52,87 @@ BACKUP_SERVERS = [
 	("lobby2.springlobby.info", 8200),
 ]
 
+class BattleStatus:
+	def __init__(self, battle_status):
+		battle_status = int(battle_status)
+		if not (0 <= battle_status <= 2147483647):
+			raise ValueError("Battle status out of range")
+
+		self.battle_status = battle_status
+
+		# Define the bit positions
+		self.ready = battle_status & 0b1
+		self.team = (battle_status >> 1) & 0b1111
+		self.ally_team = (battle_status >> 6) & 0b1111
+		self.mode = (battle_status >> 10) & 0b1
+		self.sync_status = (battle_status >> 22) & 0b11
+		self.side = (battle_status >> 24) & 0b1111
+
+	def __str__(self):
+		return f"Ready: {self.ready}, Team: {self.team}, Ally Team: {self.ally_team}, " \
+			f"Mode: {self.mode}, Sync Status: {self.sync_status}, Side: {self.side}"
+
+	def encode(self):
+		encoded = 0
+		encoded |= self.ready & 0b1
+		encoded |= (self.team & 0b1111) << 1
+		encoded |= (self.ally_team & 0b1111) << 6
+		encoded |= (self.mode & 0b1) << 10
+		encoded |= (self.sync_status & 0b11) << 22
+		encoded |= (self.side & 0b1111) << 24
+		return encoded
+		
+	def __eq__(self, other):
+		if isinstance(other, self.__class__):
+			return self.__dict__ == other.__dict__
+		else:
+			return False
+		
+	def __ne__(self, other):
+		return not self.__eq__(other)
+	
+class Status:
+	def __init__(self, status):
+		status = int(status)  # Convert the input text to an integer
+
+		if not (0 <= status <= 2147483647):
+			raise ValueError("Status out of range")
+
+		self.status = status
+
+		# Define the bit positions
+		self.in_game = status & 0b1
+		self.away_status = (status >> 1) & 0b1
+		self.rank = (status >> 2) & 0b111
+		self.access_status = (status >> 5) & 0b1
+		self.bot_mode = (status >> 6) & 0b1
+
+	def __str__(self):
+		return f"In Game: {self.in_game}, Away Status: {self.away_status}, " \
+			f"Rank: {self.rank}, Access Status: {self.access_status}, Bot Mode: {self.bot_mode}"
+
+	def encode(self):
+		encoded = 0
+		encoded |= self.in_game & 0b1
+		encoded |= (self.away_status & 0b1) << 1
+		encoded |= (self.rank & 0b111) << 2
+		encoded |= (self.access_status & 0b1) << 5
+		encoded |= (self.bot_mode & 0b1) << 6
+
+		return encoded
+	
+	def __eq__(self, other):
+		if isinstance(other, self.__class__):
+			return self.__dict__ == other.__dict__
+		else:
+			return False
+		
+	def __ne__(self, other):
+		return not self.__eq__(other)
+
+
 class User:
-	def __init__(self, userName, country, cpu ,userID, lobbyID = "*"):
+	def __init__(self, userName, country = "??", cpu = 0, userID = 0, lobbyID = "stresstester client"):
 		self.userName = userName
 		self.country = country
 		self.cpu = cpu
@@ -64,6 +143,15 @@ class User:
 		self.state = State.LOGGEDIN # we need to be able to track other user's states too
 		self.status = 0
 		self.battlestatus = 0
+		
+	def __eq__(self, other):
+		if isinstance(other, self.__class__):
+			return self.__dict__ == other.__dict__
+		else:
+			return False
+		
+	def __ne__(self, other):
+		return not self.__eq__(other)
 
 class Battle:
 	def __init__(self, battleID, type, natType, founder, ip, port, maxPlayers, passworded, rank, mapHash, engineName="engineName",  engineVersion= 'engineVersion',map = "map", title='title', gameName = 'gameName',  channel = 'channel'):
@@ -111,6 +199,15 @@ class Battle:
 			user.battleID = None
 			del self.users[user.userName]
 			return ok
+	
+	def __eq__(self, other):
+		if isinstance(other, self.__class__):
+			return self.__dict__ == other.__dict__
+		else:
+			return False
+		
+	def __ne__(self, other):
+		return not self.__eq__(other)
 
 class Channel:
 	def __init__(self, name):
@@ -126,6 +223,15 @@ class Channel:
 			print(f"Channel:Leave: User {user.userName} wasnt even in channel {self.name}")
 		else:
 			del self.users[user.userName]
+
+	def __eq__(self, other):
+		if isinstance(other, self.__class__):
+			return self.__dict__ == other.__dict__
+		else:
+			return False
+		
+	def __ne__(self, other):
+		return not self.__eq__(other)
 
 class LobbyClient:
 
@@ -149,6 +255,7 @@ class LobbyClient:
 		self.handlers = {} #key name, value tuple of(function, argcount, varargcount)
 		self.cmdlog = [] # push all server and client messages here 
 		self.joinBattleTarget = None
+		self.myUser = User(self.userName,)
 		self.OpenSocket(server_addr)
 		self.Init()
 
@@ -670,6 +777,27 @@ class LobbyClient:
 
 	def Say(self):
 		self.out_SAY("sy", "Hello World no. %d" %(self.iters))
+
+	def CompareState(self, other):
+		matches = True
+		for userName in sorted(list(self.users.keys())):
+			if userName not in other.users:
+				print(f"Mismatch between userlist between {self.username} and {other.username}: {userName} does not exist in other")
+				matches = False
+
+		for battleID in sorted(list(self.battles)):
+			if battleID not in other.battles:
+				print(f"Mismatch between battlelist between {self.username} and {other.username}: {battleID} does not exist in other")
+				matches = False
+			else:
+				for userName in self.battles[battleID].keys():
+					if userName not in other.battles[battleID]:
+						print(f"Mismatch between battlelist between {self.username} and {other.username}: {battleID} does not have user {userName}")
+						matches = False
+		return matches
+
+
+
 	def Update(self):
 		assert(self.host_socket != None)
 
