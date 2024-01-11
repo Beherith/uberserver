@@ -857,17 +857,28 @@ class LobbyClient:
 		self.out_EXIT()
 
 def CompareClients(clients):
+	identities = [[]]  # of dicts of identities
+	identities[0].append(clients.pop(0))
+
 	allmatch = True
 	for i, client in enumerate(clients):
-		for j, otherclient in enumerate(clients):
-			if i != j:
-				if not client.CompareState(otherclient):
-					allmatch = False
-	if not allmatch:
+		unique = True
+		for cluster in identities:
+			other = cluster[0]
+			if client.CompareState(other) and other.CompareState(client):
+				unique = False
+				cluster.append(client)
+				break
+		if unique:
+			identities.append([client])
+
+	print(f'Sizes of individual clusters for {len(clients)} is {",".join([len(cluster)for cluster in identities])}')
+
+	if len(identities) > 1:
 		print(f"Clients dont match after {NUM_UPDATES} updates")
 	else:
 		print(f"Clients match after {num_updates} updates")
-	return allmatch
+	return  len(identities) == 1
 
 
 def RunClients(num_clients, num_updates):
