@@ -36,15 +36,15 @@ class State(enum.Enum):
 	INBATTLE = 3
 	HOSTING = 4
 
-USE_THREADS = True
+USE_THREADS = False
 
-NUM_CLIENTS = 100 if USE_THREADS == True else 10
-NUM_UPDATES = 1000
-CLIENT_NAME = "ubertest%04d"
-CLIENT_PWRD = "KeepItSecretKeepItSafe%04d"
+NUM_CLIENTS = 50 if USE_THREADS == True else 50
+NUM_UPDATES = 100000
+CLIENT_NAME = "[teh]stress[%04d]"
+CLIENT_EMAIL = "[teh]stress[%04d]_mysterme@gmail.com"
 MAGIC_WORDS = "SqueamishOssifrage"
 
-HOST_SERVER = ("localhost", 8200)
+HOST_SERVER = ("server5.beyondallreason.info", 8200)
 MAIN_SERVER = ("lobby.springrts.com", 8200)
 TEST_SERVER = ("lobby.springrts.com", 7000)
 BACKUP_SERVERS = [
@@ -235,11 +235,12 @@ class Channel:
 
 class LobbyClient:
 
-	def __init__(self, server_addr, username, password):
+	def __init__(self, server_addr, username, password, email):
 		self.host_socket = None
 		self.socket_data = ""
 
 		self.username = username
+		self.email = email
 		self.password = password
 		self.password = base64.b64encode(md5(password.encode("utf-8")).digest()).decode("utf-8")
 		assert(type(self.password) == str)
@@ -369,6 +370,7 @@ class LobbyClient:
 		try:
 			if data[0:4] != "PING":
 				self.cmdlog.append(f"[{time.time():.2f}] OUT: {data} S:{self.state}")
+			print(data)
 			self.host_socket.send(data.encode("utf-8") + b"\n")
 		except ConnectionResetError:
 			print (f"Connection reset for user {self.username}") 
@@ -434,6 +436,8 @@ class LobbyClient:
 
 		command = command.upper()
 
+		command = command.replace(".","_")
+
 		if command not in self.handlers:
 			funcname = 'in_%s' % command
 			function = getattr(self, funcname)
@@ -463,7 +467,7 @@ class LobbyClient:
 		if (numspaces > total_args - 1):
 			arguments = args.split(' ', total_args - 1)
 		else:
-			arguments = args.split(' ')
+			arguments = args.split(' ', total_args -2)
 
 		try:
 			function(*(arguments))
@@ -480,13 +484,13 @@ class LobbyClient:
 
 	def out_LOGIN(self):
 		#self.Send("LOGIN %s %s 0 *\tstresstester client\t0\tsp cl p" % (self.username, self.password))
-		self.Send("LOGIN %s %s 0 *\tstresstester client\t0\tsp b" % (self.username, self.password))
+		self.Send("LOGIN %s %s 0 * stresstester client\t9762349872\tsp b" % (self.username, self.password))
 		self.requested_authentication = True
 		print (f"LOGIN {self.username}")
 
 	def out_REGISTER(self):
 		print("[REGISTER][time=%d::iter=%d]" % (time.time(), self.iters))
-		self.Send("REGISTER %s %s" % (self.username, self.password))
+		self.Send("REGISTER %s %s %s" % (self.username, self.password, self.email ))
 		self.requested_registration = True
 
 	def out_CONFIRMAGREEMENT(self):
@@ -535,6 +539,11 @@ class LobbyClient:
 		#time.sleep(5)
 		pass
 
+	def in_QUEUED(self, msg = ""):
+		print ("queued", msg)
+		time.sleep(1)
+		pass 
+
 	def in_AGREEMENTEND(self):
 		print("[AGREEMENTEND][time=%d::iter=%d]" % (time.time(), self.iters))
 		#assert(self.accepted_registration)
@@ -572,15 +581,30 @@ class LobbyClient:
 		## nothing we can do if that also fails
 		self.out_REGISTER()
 
-
 	def in_MOTD(self, msg):
 		pass
 
-	def in_ADDUSER(self, userName, country, cpu, userID, lobbyID = "*"):
+	def in_ADDSTARTRECT(self, num = "", tl = "", br = "", tr = "", bl = ""):
+		pass
+
+	def in_SAIDBATTLEEX(self, user = "", msg = "", unk1 = '', unk2 = '', unk3 = '', unk4 = '', unk5 = '', unk6 = '', unk7 = '', unk8 = '', unk9 = '', unk10 = '', unk11 = '', unk12 = '', ):
+		pass
+
+	def in_REMOVESCRIPTTAGS(self, script = '', tag = '', unk1 = "", unk2 = ""):
+		pass
+
+	def in_S_BATTLE_UPDATE_LOBBY_TITLE(self, battleid = "", newtitle = ""):
+		pass
+
+	def in_ADDUSER(self, userName, country, cpu, userID, lobbyID = "*", unused = "*"):
 		user = User(userName, country, cpu, userID, lobbyID)
 		self.users[userName] = user
 
-	def in_BATTLEOPENED(self, battleID, type, natType, founder, ip, port, maxPlayers, passworded, rank, mapHash, engineName="engineName",  engineVersion= 'engineVersion',map = "map", title='title', gameName = 'gameName',  channel = 'channel'):
+	def in_REGISTER(self, username, password):
+		pass
+
+	def in_BATTLEOPENED(self, battleID, type, natType, founder, ip, port, maxPlayers, passworded, rank, mapHash, engineName="engineName",  engineVersion= 'engineVersion',map = "map", title='title', gameName = 'gameName',  channel = 'channel',
+					  un1 = '', un2 = '', un3 = '' , un4 = '', un5 ='', un6= '', un11 = '', un12 = '', un13 = '' , un14 = '', un15 ='', un16= '', un21 = '', u22 = '', un23 = '' , un24 = '', un25 ='', un26= ''):
 		#print("BATTLEOPENED received %d %s" %(battleid, self.username))
 		if self.AssertUserNameExists(founder):
 			if battleID in self.battles:
@@ -757,9 +781,9 @@ class LobbyClient:
 			self.state = State.JOININGBATTLE
 			self.joinBattleTarget = battleID
 
-	def out_JOINBATTLE(self, battleID, password = '*', scriptPassword = None):
+	def out_JOINBATTLE(self, battleID, password = 'empty', scriptPassword = "1234512345"):
 		if scriptPassword is None:
-			self.Send(f"JOINBATTLE {battleID}")
+			self.Send(f"JOINBATTLE {battleID} {password}")
 		else:
 			self.Send(f"JOINBATTLE {battleID} {password} {scriptPassword}")
 
@@ -849,7 +873,7 @@ class LobbyClient:
 	def Run(self, iters):
 		for i in range(iters):
 			self.Update()
-			time.sleep(0.02)
+			time.sleep(0.2)
 		time.sleep(1)
 		self.Update(step = False)
 
@@ -885,7 +909,8 @@ def RunClients(num_clients, num_updates):
 	clients = [None] * num_clients
 
 	for i in range(num_clients):
-		clients[i] = LobbyClient(HOST_SERVER, (CLIENT_NAME % i), (CLIENT_PWRD % i))
+		#clients[i] = LobbyClient(HOST_SERVER, (CLIENT_NAME % i), (CLIENT_PWRD % i))
+		clients[i] = LobbyClient(HOST_SERVER, (CLIENT_NAME % i), (CLIENT_PWRD), (CLIENT_EMAIL % i))
 
 	for j in range(num_updates):
 		if j == num_updates -1 :
@@ -911,7 +936,8 @@ class ClientThread(threading.Thread):
 		self.num_updates = args[1]
 	def run(self):
 
-		client = LobbyClient(HOST_SERVER, (CLIENT_NAME % self.client_num), (CLIENT_PWRD % self.client_num))
+		#client = LobbyClient(HOST_SERVER, (CLIENT_NAME % self.client_num), (CLIENT_PWRD % self.client_num))
+		client = LobbyClient(HOST_SERVER, (CLIENT_NAME % self.client_num), (CLIENT_PWRD ),  (CLIENT_EMAIL % self.client_num ))
 
 		print("[RunClientThread] running client %s" % client.username)
 		client.Run(self.num_updates)
@@ -922,7 +948,7 @@ class ClientThread(threading.Thread):
 	
 
 def RunClientThread(i, k):
-	client = LobbyClient(HOST_SERVER, (CLIENT_NAME % i), (CLIENT_PWRD % i))
+	client = LobbyClient(HOST_SERVER, (CLIENT_NAME % i), (CLIENT_PWRD % i),  (CLIENT_EMAIL % i))
 
 	print("[RunClientThread] running client %s" % client.username)
 	client.Run(k)
